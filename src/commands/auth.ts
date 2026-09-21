@@ -26,8 +26,8 @@ FLAGS
                                  remote, then the only logged-in host)
   login:   --with-token          read the token from stdin instead of prompting (scripts, CI)
            --no-browser          print the token page URL instead of opening it
-           --user <name>         your Bitbucket username (needed when the instance does not report
-                                 it, and with --skip-verify)
+           --user <name>         your Bitbucket username (needed with --skip-verify or when the
+                                 instance does not report it)
            --git-user <name>     username git sends with the token (default: your username;
                                  x-token-auth for project/repository tokens)
            --expires-at <iso>    when the token expires, if you gave it an expiry (optional)
@@ -83,8 +83,11 @@ async function hostFor(args: ParsedArgs, ctx: Context, opts: { allowRemote?: boo
   return resolveHost(ctx.env, hosts, remote?.host ?? null);
 }
 
-export function tokenPageUrl(host: string): string {
-  return `${baseUrl(host)}/plugins/servlet/access-tokens/manage`;
+/** The HTTP access tokens page of the logged-in browser user, or of a named user (trailing slash matters). */
+export function tokenPageUrl(host: string, username: string | null): string {
+  return username
+    ? `${baseUrl(host)}/plugins/servlet/access-tokens/users/${encodeURIComponent(username)}/manage`
+    : `${baseUrl(host)}/plugins/servlet/access-tokens/`;
 }
 
 async function login(argv: string[], ctx: Context): Promise<number> {
@@ -95,13 +98,14 @@ async function login(argv: string[], ctx: Context): Promise<number> {
   const expiresAt = flag(args, "expires-at") ?? null;
   if (expiresAt !== null && Number.isNaN(Date.parse(expiresAt))) throw new UsageError(`--expires-at: not a date: ${expiresAt}`);
 
+  const userFlag = flag(args, "user");
   let tokenValue: string;
   if (has(args, "with-token")) {
     tokenValue = ctx.stdin().trim().split(/\r?\n/)[0]?.trim() ?? "";
     if (!tokenValue) throw new UsageError("--with-token: no token on stdin");
   } else {
     if (!ctx.interactive) throw new UsageError("bb auth login: not a terminal; use `bb auth login --hostname <host> --with-token < token.txt`");
-    const url = tokenPageUrl(host);
+    const url = tokenPageUrl(host, userFlag ?? null);
     ctx.stderr(`Create an HTTP access token for bb on ${host}:\n  permissions: Repository → Write (and Project → Read)\n  expiry:      your choice; bb asks you to log in again when it runs out\n`);
     const opened = has(args, "no-browser") ? false : await ctx.openBrowser(url);
     ctx.stderr(opened ? `Opened ${url} in your browser.\n` : `Open ${url} in your browser.\n`);
@@ -110,7 +114,6 @@ async function login(argv: string[], ctx: Context): Promise<number> {
   }
 
   let user: HostUser;
-  const userFlag = flag(args, "user");
   if (has(args, "skip-verify")) {
     if (!userFlag) throw new UsageError("--skip-verify needs --user <name>");
     user = { account: userFlag, accountId: null, gitUser: flag(args, "git-user") ?? userFlag, token: tokenValue, expiresAt };

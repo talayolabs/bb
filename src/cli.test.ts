@@ -33,16 +33,24 @@ test("auth login --with-token verifies the token, learns the username and stores
   assert.ok(!ctx.err.join("").includes("MDM0MjM5NDc2MDsecret"));
 });
 
-test("auth login in a terminal opens the token page and reads the pasted token without echo", async () => {
+test("auth login in a terminal opens the token page (trailing slash) and reads the pasted token without echo", async () => {
   const { fetch } = dcFetch();
   const ctx = testContext({ fetch, interactive: true, secret: "  MDM0MjM5NDc2MDsecret\n" });
   assert.equal(await main(["auth", "login", "--hostname", HOST], ctx), 0);
-  assert.deepEqual(ctx.opened, [`https://${HOST}/plugins/servlet/access-tokens/manage`]);
+  assert.deepEqual(ctx.opened, [`https://${HOST}/plugins/servlet/access-tokens/`]);
   assert.deepEqual(ctx.prompts, ["Paste the token here: "]);
   const err = ctx.err.join("");
   assert.match(err, /Repository → Write/);
-  assert.match(err, /Opened https:\/\/bitbucket\.example\.com\/plugins\/servlet\/access-tokens\/manage/);
+  assert.match(err, /Opened https:\/\/bitbucket\.example\.com\/plugins\/servlet\/access-tokens\/ in your browser\.\n/);
   assert.equal(readHosts(join(ctx.configDir, "hosts.yml"))[HOST]!.users[0]!.token, "MDM0MjM5NDc2MDsecret");
+});
+
+test("auth login --user opens that user's token page", async () => {
+  const ctx = testContext({ fetch: dcFetch().fetch, interactive: true, secret: "MDM0MjM5NDc2MDsecret" });
+  assert.equal(await main(["auth", "login", "--hostname", HOST, "--user", "j.perelli"], ctx), 0);
+  assert.deepEqual(ctx.opened, [`https://${HOST}/plugins/servlet/access-tokens/users/j.perelli/manage`]);
+  // The instance knows better than the typed name: identity still comes from X-AUSERNAME.
+  assert.equal(readHosts(join(ctx.configDir, "hosts.yml"))[HOST]!.users[0]!.account, "Alice.Smith");
 });
 
 test("auth login --no-browser (or no opener) prints the URL instead; BB_HOST supplies the host", async () => {
@@ -50,7 +58,7 @@ test("auth login --no-browser (or no opener) prints the URL instead; BB_HOST sup
   const ctx = testContext({ fetch, interactive: true, secret: "MDM0MjM5NDc2MDsecret", env: { BB_HOST: HOST } });
   assert.equal(await main(["auth", "login", "--no-browser"], ctx), 0);
   assert.deepEqual(ctx.opened, []);
-  assert.match(ctx.err.join(""), /Open https:\/\/bitbucket\.example\.com\/plugins\/servlet\/access-tokens\/manage in your browser/);
+  assert.match(ctx.err.join(""), /Open https:\/\/bitbucket\.example\.com\/plugins\/servlet\/access-tokens\/ in your browser/);
 
   const ctx2 = testContext({ fetch: dcFetch().fetch, interactive: true, secret: "MDM0MjM5NDc2MDsecret", browserOpens: false });
   assert.equal(await main(["auth", "login", "--hostname", HOST], ctx2), 0);

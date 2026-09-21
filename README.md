@@ -25,7 +25,7 @@ npm run bundle && cp build/bb.mjs /usr/local/bin/bb
 bb auth login --hostname bitbucket.yourcompany.com
 ```
 
-`bb` opens `https://bitbucket.yourcompany.com/plugins/servlet/access-tokens/manage` in your browser
+`bb` opens `https://bitbucket.yourcompany.com/plugins/servlet/access-tokens/` in your browser
 (Profile picture → Manage account → HTTP access tokens). Create a token — *Project: Read* plus
 *Repository: Write* is enough to clone, push and do everything on pull requests except merging — and
 paste it once into the terminal (input is hidden). `bb` verifies it, learns your username from the
