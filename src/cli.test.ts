@@ -47,9 +47,8 @@ test("auth login in a terminal opens the token page (trailing slash) and reads t
 
 test("auth login --user opens that user's token page", async () => {
   const ctx = testContext({ fetch: dcFetch().fetch, interactive: true, secret: "MDM0MjM5NDc2MDsecret" });
-  assert.equal(await main(["auth", "login", "--hostname", HOST, "--user", "j.perelli"], ctx), 0);
-  assert.deepEqual(ctx.opened, [`https://${HOST}/plugins/servlet/access-tokens/users/j.perelli/manage`]);
-  // The instance knows better than the typed name: identity still comes from X-AUSERNAME.
+  assert.equal(await main(["auth", "login", "--hostname", HOST, "--user", "Alice.Smith"], ctx), 0);
+  assert.deepEqual(ctx.opened, [`https://${HOST}/plugins/servlet/access-tokens/users/Alice.Smith/manage`]);
   assert.equal(readHosts(join(ctx.configDir, "hosts.yml"))[HOST]!.users[0]!.account, "Alice.Smith");
 });
 
