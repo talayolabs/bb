@@ -1,0 +1,35 @@
+{
+  "name": "@talayolabs/bb",
+  "version": "0.1.0",
+  "description": "gh-like command line tool for Bitbucket Cloud: OAuth/API-token login, git credential helper, REST API and pull requests.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/talayolabs/bb.git"
+  },
+  "type": "module",
+  "bin": {
+    "bb": "dist/bb.js"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/test-helpers.*",
+    "!dist/**/*.map"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --test-reporter=spec 'src/**/*.test.ts'",
+    "bundle": "node scripts/bundle.mjs",
+    "clean": "rm -rf dist build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.9.3"
+  }
+}

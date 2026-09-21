@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run bundle
+      - name: Smoke-test the package and the single-file bundle outside the repo
+        run: |
+          set -eu
+          version="$(node -p "require('./package.json').version")"
+          test "$(node build/bb.mjs --version)" = "bb $version"
+          npm pack --pack-destination "$RUNNER_TEMP" >/dev/null
+          mkdir -p "$RUNNER_TEMP/pkg" && cd "$RUNNER_TEMP/pkg"
+          npm init -y >/dev/null
+          npm install --omit=dev "$RUNNER_TEMP"/talayolabs-bb-*.tgz
+          test "$(./node_modules/.bin/bb --version)" = "bb $version"
+          printf 'protocol=https\nhost=bitbucket.org\n' | BB_TOKEN=t ./node_modules/.bin/bb auth git-credential get | grep -q '^password=t$'
