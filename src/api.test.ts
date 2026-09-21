@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ApiError, BitbucketClient, errorMessage, fetchCurrentUser } from "./api.ts";
+import { ApiError, BitbucketClient, NetworkError, errorMessage, fetchCurrentUser } from "./api.ts";
 import { fakeFetch, json } from "./test-helpers.ts";
 
 const HOST = "bitbucket.example.com";
@@ -126,4 +126,38 @@ test("fetchCurrentUser fails clearly without X-AUSERNAME and skips the probe whe
   const me = await fetchCurrentUser(new BitbucketClient({ host: HOST, token: "t", fetch }), "bob");
   assert.equal(me.id, 7);
   assert.deepEqual(probe.requests.map((r) => r.url), [`${CORE}/users/bob`]);
+});
+
+test("network failures name the host and Node's error code instead of undici's 'fetch failed'", async () => {
+  const failing = (code: string) => async () => {
+    const cause = Object.assign(new Error("low-level detail"), { code });
+    throw new TypeError("fetch failed", { cause });
+  };
+  const client = (code: string) => new BitbucketClient({ host: "bitbucket.example.com", token: "MDM0secret", fetch: failing(code) as unknown as typeof fetch });
+
+  await assert.rejects(client("SELF_SIGNED_CERT_IN_CHAIN").request("projects"), (err: unknown) => {
+    assert.ok(err instanceof NetworkError);
+    assert.equal(err.code, "SELF_SIGNED_CERT_IN_CHAIN");
+    assert.match(err.message, /could not verify the TLS certificate of bitbucket\.example\.com \(SELF_SIGNED_CERT_IN_CHAIN\)/);
+    assert.match(err.message, /NODE_EXTRA_CA_CERTS/);
+    assert.ok(!err.message.includes("MDM0secret"));
+    return true;
+  });
+  await assert.rejects(client("ENOTFOUND").request("projects"), /could not resolve bitbucket\.example\.com \(ENOTFOUND\)/);
+  await assert.rejects(client("ECONNREFUSED").request("projects"), /could not connect to bitbucket\.example\.com \(ECONNREFUSED\)/);
+
+  const plain = new BitbucketClient({
+    host: "bitbucket.example.com",
+    token: "t",
+    fetch: (async () => {
+      throw new TypeError("fetch failed", { cause: new Error("something odd") });
+    }) as unknown as typeof fetch,
+  });
+  await assert.rejects(plain.request("projects"), /could not reach bitbucket\.example\.com: something odd$/);
+});
+
+test("fetchCurrentUser rejects a non-user response instead of storing garbage", async () => {
+  const { fetch } = fakeFetch(() => json(200, { html: "<login page>" }));
+  const client = new BitbucketClient({ host: "bitbucket.example.com", token: "t", fetch });
+  await assert.rejects(fetchCurrentUser(client, "alice"), /GET \/users\/alice did not return a user/);
 });

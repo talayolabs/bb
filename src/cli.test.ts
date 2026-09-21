@@ -319,7 +319,7 @@ test("unexpected errors are redacted before reaching stderr", async () => {
   const { fetch } = fakeFetch(() => Promise.reject(new Error("socket hang up while sending Bearer supersecret to supersecret")));
   const ctx = testContext({ fetch, env: { BB_TOKEN: "supersecret", BB_HOST: HOST } });
   assert.equal(await main(["api", "projects"], ctx), 1);
-  assert.equal(ctx.err.join(""), "bb: socket hang up while sending Bearer *** to ***\n");
+  assert.equal(ctx.err.join(""), `bb: could not reach ${HOST}: socket hang up while sending Bearer *** to ***\n`);
 });
 
 test("help and version", async () => {

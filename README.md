@@ -48,6 +48,11 @@ there is nothing to pick). `bb auth switch --user <name>` picks the active accou
 `BB_TOKEN` (with `BB_HOST`, and `BB_GIT_USER` for git) overrides the stored login for one-off
 commands and CI.
 
+Behind a TLS-inspecting proxy or VPN (Cloudflare WARP, Zscaler, …) Node does not trust the proxy's
+root CA even though your browser and `curl` do; `bb` then reports `could not verify the TLS certificate`.
+Point Node at the CA once: `export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/cloudflare-gateway.pem` (WARP on Linux; find yours with `ls /etc/ssl/certs | grep -i cloudflare`)
+(or `export NODE_OPTIONS=--use-system-ca` on Node 22.15+).
+
 OAuth 2.0 login is deliberately not implemented: on Data Center it requires an administrator to create
 an incoming application link per instance.
 

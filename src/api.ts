@@ -32,6 +32,58 @@ export class ApiError extends Error {
   }
 }
 
+/** A request that never got an HTTP response (DNS, TCP, TLS); `code` is Node's, e.g. ENOTFOUND or SELF_SIGNED_CERT_IN_CHAIN. */
+export class NetworkError extends Error {
+  readonly code: string | null;
+  readonly host: string;
+
+  constructor(host: string, cause: unknown) {
+    const code = errorCode(cause);
+    super(describeNetwork(host, code, cause));
+    this.name = "NetworkError";
+    this.host = host;
+    this.code = code;
+  }
+}
+
+const TLS_CODES = new Set([
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "CERT_HAS_EXPIRED",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+]);
+
+function errorCode(err: unknown): string | null {
+  for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
+    if (typeof e === "object" && "code" in e && typeof (e as { code: unknown }).code === "string") return (e as { code: string }).code;
+    e = e instanceof Error ? e.cause : null;
+  }
+  return null;
+}
+
+function describeNetwork(host: string, code: string | null, cause: unknown): string {
+  const root = (() => {
+    let e: unknown = cause;
+    while (e instanceof Error && e.cause) e = e.cause;
+    return e instanceof Error ? e.message : String(e);
+  })();
+  if (code && TLS_CODES.has(code)) {
+    return (
+      `could not verify the TLS certificate of ${host} (${code}).\n` +
+      `If a proxy such as Cloudflare WARP or Zscaler re-signs traffic, point Node at its root CA:\n` +
+      `  export NODE_EXTRA_CA_CERTS=/path/to/proxy-root-ca.pem   # or: export NODE_OPTIONS=--use-system-ca`
+    );
+  }
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return `could not resolve ${host} (${code}): check the hostname, VPN or DNS`;
+  if (code === "ECONNREFUSED" || code === "ECONNRESET" || code === "ETIMEDOUT" || code === "UND_ERR_CONNECT_TIMEOUT") {
+    return `could not connect to ${host} (${code}): check the VPN, proxy or firewall`;
+  }
+  return `could not reach ${host}: ${root}${code ? ` (${code})` : ""}`;
+}
+
 function describe(method: string, url: string, status: number, body: string, retryAfter: number | null): string {
   let path = url;
   try {
@@ -157,7 +209,12 @@ export class BitbucketClient {
       headers["Content-Type"] = "application/json";
     }
     this.log?.(`> ${method} ${url}`);
-    const res = await this.fetchImpl(url, { method, headers, body, redirect: "manual" });
+    let res: Response;
+    try {
+      res = await this.fetchImpl(url, { method, headers, body, redirect: "manual" });
+    } catch (err) {
+      throw new NetworkError(this.host, err);
+    }
     this.log?.(`< ${res.status} ${res.statusText}`);
     if (!res.ok) {
       const text = await res.text();
@@ -222,5 +279,11 @@ export async function fetchCurrentUser(client: BitbucketClient, slugHint?: strin
     slug = res.headers.get("x-ausername") ?? undefined;
     if (!slug) throw new Error(`${client.host} accepted the token but did not report a user (no X-AUSERNAME); pass --user <name>`);
   }
-  return client.request<BitbucketUser>(`users/${encodeURIComponent(slug)}`);
+  const user = await client.request<unknown>(`users/${encodeURIComponent(slug)}`);
+  if (!isUser(user)) throw new Error(`${client.host}: GET /users/${slug} did not return a user; is this a Bitbucket Data Center instance?`);
+  return user;
+}
+
+function isUser(v: unknown): v is BitbucketUser {
+  return typeof v === "object" && v !== null && typeof (v as { name?: unknown }).name === "string" && typeof (v as { id?: unknown }).id === "number";
 }
