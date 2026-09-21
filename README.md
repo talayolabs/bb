@@ -1,11 +1,11 @@
 # bb — Bitbucket Data Center from the command line
 
 `bb` is to a self-hosted Bitbucket (Data Center / Server, e.g. `bitbucket.yourcompany.com`) what `gh`
-is to GitHub: one login, then `git push`, REST calls and (soon) pull-request commands all work as that
+is to GitHub: one login, then `git push`, pull-request commands and REST calls all work as that
 account, with nothing to paste into git remotes or environment variables.
 
-Status: **early**. Today `bb` does guided login, account management, a git credential helper and a
-generic `bb api`. `bb pr …` is next — see [Roadmap](#roadmap).
+Status: **early**. Today `bb` does guided login, account management, a git credential helper,
+`bb pr create | list | view | checks | comment | approve` and a generic `bb api` — see [Roadmap](#roadmap).
 
 Requires Node.js 22.18+.
 
@@ -77,6 +77,27 @@ The helper answers only for hosts in `hosts.yml` (or `BB_HOST`), with your real 
 access token as the password, exactly as Bitbucket documents it. It accepts and ignores `store`/`erase`
 so git never persists the token anywhere else, and stays silent for github.com or any other host.
 
+## Pull requests
+
+```sh
+bb pr create                              # current branch → default branch, title/body from the last commit
+bb pr create -t "Fix login" -b "Closes BOCATO-1" -B release/1.2 -r alice -r bob --draft --web
+bb pr list --state ALL --author alice -L 10
+bb pr view                                # the open pull request of the current branch
+bb pr view 12 --comments                  # threads, replies, tasks, resolved markers, file:line anchors
+bb pr checks 12                           # build statuses of the source commit (exit 1 if one failed)
+bb pr comment 12 --body "Looks good"
+bb pr comment 12 --reply-to 345 --body-file reply.md
+bb pr approve 12 · bb pr request-changes 12 · bb pr unapprove 12
+bb pr view https://bitbucket.yourcompany.com/projects/PROJ/repos/repo/pull-requests/12/overview
+```
+
+Pull requests are addressed by number, URL or (when omitted) the current branch; the repository comes
+from the current remote or `--repo KEY/slug`. `--json` prints the raw API objects. `bb pr create`
+refuses to open a pull request from a branch that has no upstream (push it first). There is no
+`bb pr merge`: Bitbucket does not let HTTP access tokens merge (the merge commit needs an interactive
+user) — `bb pr view --web` takes you there.
+
 ## REST API
 
 ```sh
@@ -123,7 +144,7 @@ HTTP access token.
 
 ## Roadmap
 
-- `bb pr create | list | view | checks | comment | reply | resolve | approve`, `bb repo clone`.
+- `bb pr` line comments, resolving threads and tasks, `bb pr diff`, `bb repo clone`.
 - Bitbucket Cloud (bitbucket.org) as a second provider.
 
 ## Development

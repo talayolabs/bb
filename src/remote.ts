@@ -27,11 +27,40 @@ export function parseRemote(url: string): RepoRef | null {
   return null;
 }
 
+export interface PrRef extends RepoRef {
+  id: number;
+}
+
+const PR_URL_RE = /^https?:\/\/([^/\s:]+)(?::\d+)?(?:\/[^\s]*?)?\/projects\/([^/\s]+)\/repos\/([^/\s]+)\/pull-requests\/(\d+)(?:[/?#].*)?$/i;
+
+/** `https://host/projects/KEY/repos/slug/pull-requests/12[/overview|/diff|…]`. */
+export function parsePrUrl(url: string): PrRef | null {
+  const m = PR_URL_RE.exec(url.trim());
+  if (!m) return null;
+  return { host: normalizeHost(m[1]!), project: m[2]!, slug: m[3]!, id: Number(m[4]) };
+}
+
+/** Runs git and resolves its trimmed stdout, or null when git fails (not a repository, no upstream, …). */
+export function git(args: string[], env: NodeJS.ProcessEnv): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile("git", args, { env, encoding: "utf8" }, (err, stdout) => resolve(err ? null : stdout.replace(/\n$/, "")));
+  });
+}
+
+/** Name of the checked-out branch, or null when detached or outside a repository. */
+export async function currentBranch(env: NodeJS.ProcessEnv): Promise<string | null> {
+  const out = await git(["symbolic-ref", "--quiet", "--short", "HEAD"], env);
+  return out || null;
+}
+
+/** `origin/feature` for the branch's upstream, or null when it has none. */
+export function upstreamOf(branch: string, env: NodeJS.ProcessEnv): Promise<string | null> {
+  return git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", `${branch}@{upstream}`], env);
+}
+
 /** The Bitbucket repository of the current directory (origin first), or null. */
 export async function currentRepo(env: NodeJS.ProcessEnv): Promise<RepoRef | null> {
-  const out = await new Promise<string>((resolve) => {
-    execFile("git", ["remote", "-v"], { env, encoding: "utf8" }, (err, stdout) => resolve(err ? "" : stdout));
-  });
+  const out = (await git(["remote", "-v"], env)) ?? "";
   const lines = out.split("\n").filter((l) => l.includes("(fetch)"));
   lines.sort((a, b) => Number(b.startsWith("origin\t")) - Number(a.startsWith("origin\t")));
   for (const line of lines) {

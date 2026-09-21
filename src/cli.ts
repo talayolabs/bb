@@ -6,6 +6,7 @@ import { NoHostError } from "./config.ts";
 import { processContext, type Context } from "./context.ts";
 import { AUTH_HELP, runAuth } from "./commands/auth.ts";
 import { API_HELP, runApi } from "./commands/api.ts";
+import { PR_HELP, runPr } from "./commands/pr.ts";
 
 const HELP = `bb — Bitbucket Data Center from the command line.
 
@@ -14,6 +15,7 @@ USAGE
 
 COMMANDS
   auth    Log in / out of a Bitbucket host, print tokens, git credential helper
+  pr      Create, list, view, check, comment on and approve pull requests
   api     Make an authenticated REST API request
 
 FLAGS
@@ -58,6 +60,8 @@ export async function main(argv: string[], ctx: Context): Promise<number> {
         return await runAuth(args, ctx);
       case "api":
         return await runApi(args, ctx);
+      case "pr":
+        return await runPr(args, ctx);
       case "version":
       case "--version":
         ctx.stdout(`bb ${version()}\n`);
@@ -67,7 +71,7 @@ export async function main(argv: string[], ctx: Context): Promise<number> {
       case "--help":
       case "-h": {
         const topic = args[0];
-        ctx.stdout(topic === "auth" ? AUTH_HELP : topic === "api" ? API_HELP : HELP);
+        ctx.stdout(topic === "auth" ? AUTH_HELP : topic === "api" ? API_HELP : topic === "pr" ? PR_HELP : HELP);
         return cmd === undefined ? EXIT_USAGE : EXIT_OK;
       }
       default:
