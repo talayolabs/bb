@@ -19,6 +19,15 @@ npm ci && npm run build && npm link
 npm run bundle && cp build/bb.mjs /usr/local/bin/bb
 ```
 
+`bb` is also run by git (as a credential helper) from inside arbitrary repositories, so it must not
+depend on a per-directory Node version. With asdf/mise/nvm either set a global default Node, or
+install a wrapper that pins the interpreter:
+
+```sh
+printf '#!/bin/sh\nexec "%s" "%s/bb/build/bb.mjs" "$@"\n' "$(asdf which node)" "$HOME" > ~/.local/bin/bb
+chmod +x ~/.local/bin/bb
+```
+
 ## Log in
 
 ```sh
