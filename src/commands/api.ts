@@ -1,20 +1,24 @@
-import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { flag, flagAll, has, parseArgs, UsageError } from "../args.ts";
 import { BitbucketClient, type RequestOptions } from "../api.ts";
 import { resolveCredential } from "../auth.ts";
+import { hostsFile, resolveHost } from "../config.ts";
+import { readHosts } from "../hosts.ts";
+import { currentRepo, type RepoRef } from "../remote.ts";
 import type { Context } from "../context.ts";
 
-export const API_HELP = `Make an authenticated request to the Bitbucket Cloud REST API.
+export const API_HELP = `Make an authenticated request to the Bitbucket Data Center REST API.
 
 USAGE
   bb api <path> [flags]
 
-The path is relative to https://api.bitbucket.org/2.0 (e.g. "user", "/repositories/ws/repo/pullrequests")
-or a full https://api.bitbucket.org URL such as a "next" page link. Placeholders {workspace} and {repo}
-are filled from the current directory's bitbucket.org git remote.
+The path is relative to https://<host>/rest/api/latest (e.g. "projects/KEY/repos/slug/pull-requests"),
+an explicit REST path ("rest/build-status/latest/commits/<sha>"), or a full URL on the host.
+Placeholders {project} and {repo} are filled from the current directory's Bitbucket git remote
+(https://host/scm/KEY/slug.git or ssh://git@host:7999/KEY/slug.git), which also selects the host.
 
 FLAGS
+      --hostname <host>    Bitbucket host (default: BB_HOST, the current remote, or the only login)
   -X, --method <verb>      HTTP method (default GET, or POST when a body is given)
   -f, --raw-field k=v      add a string field to the JSON body (nested keys: "destination.branch.name=main")
   -F, --field k=v          like -f but typed: true/false/null/numbers are converted, @file reads a file
@@ -22,22 +26,23 @@ FLAGS
       --input <file>       send the file as the request body ("-" for stdin); JSON unless --content-type
       --content-type <ct>  content type for --input
   -H, --header k:v         extra request header
-      --paginate           follow "next" links and print all "values" as one JSON array
-      --jq <path>          print only this dot path of the response (e.g. ".values[].title", ".display_name")
+      --paginate           follow nextPageStart until isLastPage and print all "values" as one JSON array
+      --jq <path>          print only this dot path of the response (e.g. ".values[].title", ".displayName")
   -i, --include            print the response status and headers before the body
       --silent             print nothing on success
       --verbose            log requests to stderr (tokens are never printed)
 
 EXAMPLES
-  bb api user
-  bb api /repositories/{workspace}/{repo}/pullrequests -q state=OPEN --paginate --jq '.[].title'
-  bb api /repositories/ws/repo/pullrequests -f title='Fix' -f source.branch.name=fix -f destination.branch.name=main
-  bb api /repositories/ws/repo/pullrequests/12/comments/99/resolve -X POST
+  bb api projects/{project}/repos/{repo}
+  bb api projects/{project}/repos/{repo}/pull-requests -q state=OPEN --paginate --jq '.[].title'
+  bb api projects/KEY/repos/slug/pull-requests -f title='Fix' -f fromRef.id=refs/heads/fix -f toRef.id=refs/heads/main
+  bb api projects/KEY/repos/slug/pull-requests/12/comments -f text='Looks good'
+  bb api rest/build-status/latest/commits/<sha>
 `;
 
 export async function runApi(argv: string[], ctx: Context): Promise<number> {
   const args = parseArgs(argv, {
-    valued: { method: "X", "raw-field": "f", field: "F", query: "q", input: null, "content-type": null, header: "H", jq: null },
+    valued: { hostname: null, method: "X", "raw-field": "f", field: "F", query: "q", input: null, "content-type": null, header: "H", jq: null },
     boolean: { paginate: null, include: "i", silent: null, verbose: null, help: "h" },
   });
   if (has(args, "help")) {
@@ -48,8 +53,14 @@ export async function runApi(argv: string[], ctx: Context): Promise<number> {
   if (!path) throw new UsageError(`bb api: a path is required\n\n${API_HELP}`);
   if (args.positional.length > 1) throw new UsageError(`bb api: unexpected argument "${args.positional[1]}"`);
 
-  const cred = await resolveCredential({ env: ctx.env, fetch: ctx.fetch, now: ctx.now });
-  const client = new BitbucketClient({ token: cred.token, fetch: ctx.fetch, log: ctx.debug });
+  const needsRepo = /\{(project|repo)\}/.test(path);
+  const explicitHost = flag(args, "hostname") ?? ctx.env.BB_HOST;
+  const repo = needsRepo || !explicitHost ? await currentRepo(ctx.env) : null;
+  if (needsRepo && !repo) throw new UsageError("bb api: {project}/{repo} placeholders need a Bitbucket git remote in the current directory");
+  const env = explicitHost ? { ...ctx.env, BB_HOST: explicitHost } : ctx.env;
+  const host = resolveHost(env, readHosts(hostsFile(ctx.env)), repo?.host ?? null);
+  const cred = resolveCredential(host, { env: ctx.env, now: ctx.now });
+  const client = new BitbucketClient({ host, token: cred.token, fetch: ctx.fetch, log: ctx.debug });
 
   const opts: RequestOptions = {};
   const method = flag(args, "method");
@@ -84,7 +95,7 @@ export async function runApi(argv: string[], ctx: Context): Promise<number> {
     }
   } else if (body !== undefined) opts.body = body;
 
-  const resolvedPath = await fillPlaceholders(path, ctx);
+  const resolvedPath = fillPlaceholders(path, repo);
   const jq = flag(args, "jq");
   const silent = has(args, "silent");
 
@@ -195,36 +206,8 @@ function render(v: unknown): string {
   return JSON.stringify(v, null, 2) + "\n";
 }
 
-/** `{workspace}` / `{repo}` from the bitbucket.org remote of the current repository (origin first). */
-async function fillPlaceholders(path: string, ctx: Context): Promise<string> {
-  if (!/\{(workspace|repo)\}/.test(path)) return path;
-  const repo = await currentRepo(ctx);
-  if (!repo) throw new UsageError("bb api: {workspace}/{repo} placeholders need a bitbucket.org git remote in the current directory");
-  return path.replace(/\{workspace\}/g, repo.workspace).replace(/\{repo\}/g, repo.slug);
-}
-
-export interface RepoRef {
-  workspace: string;
-  slug: string;
-}
-
-const REMOTE_RE = /(?:https?:\/\/(?:[^@/\s]+@)?bitbucket\.org\/|(?:ssh:\/\/)?git@bitbucket\.org[:/])([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i;
-
-export function parseRemote(url: string): RepoRef | null {
-  const m = REMOTE_RE.exec(url.trim());
-  return m ? { workspace: m[1]!, slug: m[2]! } : null;
-}
-
-async function currentRepo(ctx: Context): Promise<RepoRef | null> {
-  const out = await new Promise<string>((resolve) => {
-    execFile("git", ["remote", "-v"], { env: ctx.env, encoding: "utf8" }, (err, stdout) => resolve(err ? "" : stdout));
-  });
-  const lines = out.split("\n").filter((l) => l.includes("(fetch)"));
-  lines.sort((a, b) => Number(b.startsWith("origin\t")) - Number(a.startsWith("origin\t")));
-  for (const line of lines) {
-    const url = line.split(/\s+/)[1];
-    const ref = url ? parseRemote(url) : null;
-    if (ref) return ref;
-  }
-  return null;
+/** `{project}` / `{repo}` from the Bitbucket remote of the current repository. */
+export function fillPlaceholders(path: string, repo: RepoRef | null): string {
+  if (!repo) return path;
+  return path.replace(/\{project\}/g, encodeURIComponent(repo.project)).replace(/\{repo\}/g, encodeURIComponent(repo.slug));
 }

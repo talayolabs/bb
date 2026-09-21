@@ -2,18 +2,18 @@ import { createRequire } from "node:module";
 import { UsageError } from "./args.ts";
 import { ApiError } from "./api.ts";
 import { NotLoggedInError } from "./auth.ts";
-import { OAuthError } from "./oauth.ts";
+import { NoHostError } from "./config.ts";
 import { processContext, type Context } from "./context.ts";
 import { AUTH_HELP, runAuth } from "./commands/auth.ts";
 import { API_HELP, runApi } from "./commands/api.ts";
 
-const HELP = `bb — Bitbucket Cloud from the command line.
+const HELP = `bb — Bitbucket Data Center from the command line.
 
 USAGE
   bb <command> <subcommand> [flags]
 
 COMMANDS
-  auth    Log in / out of bitbucket.org, print tokens, git credential helper
+  auth    Log in / out of a Bitbucket host, print tokens, git credential helper
   api     Make an authenticated REST API request
 
 FLAGS
@@ -21,12 +21,16 @@ FLAGS
   --verbose   Log HTTP requests to stderr
   --version   Print the version
 
+Every command accepts --hostname <host>; without it bb uses BB_HOST, then the host of the
+current directory's Bitbucket remote, then the only host you are logged in to.
+
 ENVIRONMENT
-  BB_TOKEN          Access token to use instead of the stored login
-  BB_GIT_USER       Git username for BB_TOKEN (default derived from the token)
+  BB_HOST           Default Bitbucket host (e.g. bitbucket.example.com)
+  BB_TOKEN          HTTP access token to use instead of the stored login
+  BB_GIT_USER       Git username to send with BB_TOKEN (your username; default x-token-auth,
+                    which is right only for project/repository tokens)
   BB_CONFIG_DIR     Where hosts.yml lives (default $XDG_CONFIG_HOME/bb or ~/.config/bb)
-  BB_OAUTH_CLIENT_ID / BB_OAUTH_CLIENT_SECRET
-                    Override the OAuth consumer used to refresh tokens
+  BROWSER           Program used to open the token page during \`bb auth login\`
   BB_DEBUG          Same as --verbose
 
 Exit codes: 0 ok · 1 error · 2 usage · 4 not logged in / token rejected
@@ -75,17 +79,13 @@ export async function main(argv: string[], ctx: Context): Promise<number> {
       ctx.stderr(`bb: ${err.message}\n`);
       return EXIT_USAGE;
     }
-    if (err instanceof NotLoggedInError) {
+    if (err instanceof NotLoggedInError || err instanceof NoHostError) {
       ctx.stderr(`bb: ${err.message}\n`);
       return EXIT_AUTH;
     }
     if (err instanceof ApiError) {
       ctx.stderr(`bb: ${err.message}\n`);
       return err.status === 401 ? EXIT_AUTH : EXIT_ERROR;
-    }
-    if (err instanceof OAuthError) {
-      ctx.stderr(`bb: ${err.message}; run \`bb auth login\` again\n`);
-      return EXIT_AUTH;
     }
     const message = err instanceof Error ? err.message : String(err);
     ctx.stderr(`bb: ${redact(message, ctx.env)}\n`);
@@ -95,7 +95,7 @@ export async function main(argv: string[], ctx: Context): Promise<number> {
 
 /** Belt and braces: never let a token reach stderr through an unexpected error message. */
 function redact(text: string, env: NodeJS.ProcessEnv): string {
-  let out = text.replace(/Bearer\s+\S+/g, "Bearer ***").replace(/ATATT[\w=-]+/g, "ATATT***");
+  let out = text.replace(/(Bearer|Basic)\s+\S+/g, "$1 ***");
   if (env.BB_TOKEN) out = out.split(env.BB_TOKEN).join("***");
   return out;
 }

@@ -1,7 +1,7 @@
 {
   "name": "@talayolabs/bb",
   "version": "0.1.0",
-  "description": "gh-like command line tool for Bitbucket Cloud: OAuth/API-token login, git credential helper, REST API and pull requests.",
+  "description": "gh-like command line tool for Bitbucket Data Center: HTTP access token login, git credential helper and REST API.",
   "license": "MIT",
   "repository": {
     "type": "git",

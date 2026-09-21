@@ -36,24 +36,54 @@ export interface TestContext extends Context {
   err: string[];
   debugLines: string[];
   configDir: string;
+  /** URLs `openBrowser` was asked to open. */
+  opened: string[];
+  /** Prompts shown by `promptSecret`. */
+  prompts: string[];
 }
 
-export function testContext(opts: { fetch?: typeof fetch; stdin?: string; env?: Record<string, string>; now?: Date } = {}): TestContext {
+export interface TestContextOptions {
+  fetch?: typeof fetch;
+  stdin?: string;
+  env?: Record<string, string>;
+  now?: Date;
+  interactive?: boolean;
+  /** Answer to `promptSecret`. */
+  secret?: string;
+  /** Whether `openBrowser` reports success (default true). */
+  browserOpens?: boolean;
+}
+
+export function testContext(opts: TestContextOptions = {}): TestContext {
   const configDir = mkdtempSync(join(tmpdir(), "bb-test-"));
   const out: string[] = [];
   const err: string[] = [];
   const debugLines: string[] = [];
+  const opened: string[] = [];
+  const prompts: string[] = [];
   return {
-    env: { BB_CONFIG_DIR: configDir, ...opts.env },
+    // GIT_DIR points `git remote -v` at nowhere so the test's own checkout never leaks in.
+    env: { BB_CONFIG_DIR: configDir, GIT_DIR: join(configDir, "no-git"), ...opts.env },
     fetch: opts.fetch ?? (() => Promise.reject(new Error("unexpected network call"))),
     now: () => opts.now ?? new Date("2026-09-21T12:00:00Z"),
     stdin: () => opts.stdin ?? "",
     stdout: (t) => out.push(t),
     stderr: (t) => err.push(t),
     debug: (l) => debugLines.push(l),
+    interactive: opts.interactive ?? false,
+    promptSecret: async (message) => {
+      prompts.push(message);
+      return opts.secret ?? "";
+    },
+    openBrowser: async (url) => {
+      opened.push(url);
+      return opts.browserOpens ?? true;
+    },
     out,
     err,
     debugLines,
     configDir,
+    opened,
+    prompts,
   };
 }

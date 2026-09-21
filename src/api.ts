@@ -1,6 +1,9 @@
-import { API_BASE } from "./config.ts";
+import { baseUrl } from "./config.ts";
 
 export type FetchLike = typeof fetch;
+
+/** Default REST root; `bb api projects/…` is relative to it. Other roots (`/rest/build-status/latest`, …) are reached with an explicit `rest/…` path. */
+export const CORE_API_PREFIX = "/rest/api/latest";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -30,7 +33,13 @@ export class ApiError extends Error {
 }
 
 function describe(method: string, url: string, status: number, body: string, retryAfter: number | null): string {
-  const path = url.startsWith(API_BASE) ? url.slice(API_BASE.length) : url;
+  let path = url;
+  try {
+    const u = new URL(url);
+    path = u.pathname + u.search;
+  } catch {
+    /* keep as is */
+  }
   const message = errorMessage(body);
   let head: string;
   switch (status) {
@@ -38,10 +47,10 @@ function describe(method: string, url: string, status: number, body: string, ret
       head = "authentication failed (401): token missing, expired or revoked";
       break;
     case 403:
-      head = "forbidden (403): the token's scopes or the account's permissions don't allow this";
+      head = "forbidden (403): the token's permissions or the account's don't allow this";
       break;
     case 404:
-      head = "not found (404): wrong workspace/repository, or no read access";
+      head = "not found (404): wrong project/repository, or no read access";
       break;
     case 429:
       head = `rate limited (429)${retryAfter !== null ? `, retry after ${retryAfter}s` : ""}`;
@@ -52,15 +61,14 @@ function describe(method: string, url: string, status: number, body: string, ret
   return `${method} ${path}: ${head}${message ? ` — ${message}` : ""}`;
 }
 
-/** Bitbucket errors are `{ "type": "error", "error": { "message": "..." } }`; be lenient. */
+/** Data Center errors are `{ "errors": [{ "message": "...", "context": ..., "exceptionName": ... }] }`; be lenient. */
 export function errorMessage(body: string): string | null {
   try {
-    const json = JSON.parse(body) as { error?: { message?: unknown; detail?: unknown }; message?: unknown };
-    const msg = json.error?.message ?? json.message;
-    if (typeof msg === "string") {
-      const detail = json.error?.detail;
-      return typeof detail === "string" && detail !== msg ? `${msg} (${detail})` : msg;
-    }
+    const json = JSON.parse(body) as { errors?: Array<{ message?: unknown }>; message?: unknown; error?: { message?: unknown } };
+    const fromList = json.errors?.map((e) => e.message).filter((m): m is string => typeof m === "string");
+    if (fromList && fromList.length) return fromList.join("; ");
+    const msg = json.message ?? json.error?.message;
+    if (typeof msg === "string") return msg;
   } catch {
     /* not JSON */
   }
@@ -77,48 +85,55 @@ export interface RequestOptions {
   headers?: Record<string, string>;
 }
 
+/** Data Center's page envelope. */
 export interface Page<T> {
   values: T[];
-  next?: string;
   size?: number;
-  page?: number;
-  pagelen?: number;
+  limit?: number;
+  isLastPage?: boolean;
+  start?: number;
+  nextPageStart?: number;
 }
 
 export interface ClientOptions {
+  host: string;
   token: string;
   fetch?: FetchLike;
-  baseUrl?: string;
   userAgent?: string;
   /** Receives one line per request/response; `Authorization` is never included. */
   log?: (line: string) => void;
 }
 
-/** Thin Bearer-authenticated client for `https://api.bitbucket.org/2.0`. */
+/** Thin Bearer-authenticated client for one Bitbucket Data Center instance. */
 export class BitbucketClient {
+  readonly host: string;
   private readonly token: string;
   private readonly fetchImpl: FetchLike;
-  private readonly baseUrl: string;
+  private readonly origin: string;
   private readonly userAgent: string;
   private readonly log: ((line: string) => void) | null;
 
   constructor(opts: ClientOptions) {
+    this.origin = baseUrl(opts.host);
+    this.host = new URL(this.origin).host;
     this.token = opts.token;
     this.fetchImpl = opts.fetch ?? fetch;
-    this.baseUrl = (opts.baseUrl ?? API_BASE).replace(/\/$/, "");
     this.userAgent = opts.userAgent ?? "bb";
     this.log = opts.log ?? null;
   }
 
-  /** `path` is relative to `/2.0` (with or without the leading `/2.0`), or an absolute `https://api.bitbucket.org/...` URL. */
+  /**
+   * `path` is relative to `/rest/api/latest` ("projects/KEY/repos/slug"), an explicit REST path
+   * ("rest/build-status/latest/…"), or an absolute URL on this host.
+   */
   url(path: string, query?: Record<string, string | undefined>): string {
     let url: URL;
     if (/^https?:\/\//i.test(path)) {
       url = new URL(path);
-      if (url.origin !== new URL(this.baseUrl).origin) throw new Error(`refusing to send the token to ${url.origin}`);
+      if (url.origin !== this.origin) throw new Error(`refusing to send the token to ${url.origin}`);
     } else {
-      const rel = path.replace(/^\/?2\.0(?=\/|$)/, "").replace(/^\/?/, "/");
-      url = new URL(this.baseUrl + rel);
+      const rel = path.replace(/^\/+/, "");
+      url = new URL(rel.startsWith("rest/") ? `${this.origin}/${rel}` : `${this.origin}${CORE_API_PREFIX}/${rel}`);
     }
     if (query) for (const [k, v] of Object.entries(query)) if (v !== undefined) url.searchParams.set(k, v);
     return url.toString();
@@ -163,15 +178,18 @@ export class BitbucketClient {
     return text as unknown as T;
   }
 
-  /** Follows `next` links (opaque URLs) and yields every value. */
+  /** Follows `nextPageStart` until `isLastPage` and yields every value. */
   async *paginate<T>(path: string, opts: RequestOptions = {}): AsyncGenerator<T, void, void> {
-    let url: string | undefined = this.url(path, opts.query);
-    while (url) {
-      const { query: _query, ...rest } = opts;
-      const page: Page<T> = await this.request<Page<T>>(url, rest);
+    const { query, ...rest } = opts;
+    let start: number | undefined = query?.start !== undefined ? Number(query.start) : undefined;
+    for (;;) {
+      const q: Record<string, string | undefined> = { ...query };
+      if (start !== undefined) q.start = String(start);
+      const page: Page<T> = await this.request<Page<T>>(path, { ...rest, query: q });
       if (!page || !Array.isArray(page.values)) throw new Error(`${path}: response is not a paginated list`);
       for (const v of page.values) yield v;
-      url = page.next;
+      if (page.isLastPage !== false || page.nextPageStart === undefined) return;
+      start = page.nextPageStart;
     }
   }
 
@@ -182,15 +200,27 @@ export class BitbucketClient {
   }
 }
 
-/** `GET /2.0/user` fields bb cares about. */
+/** `GET /rest/api/latest/users/{slug}` fields bb cares about. */
 export interface BitbucketUser {
-  uuid: string;
-  account_id?: string;
-  display_name: string;
-  nickname: string;
-  links?: { avatar?: { href?: string }; html?: { href?: string } };
+  id: number;
+  name: string;
+  slug: string;
+  displayName: string;
+  emailAddress?: string;
+  active?: boolean;
+  type?: "NORMAL" | "SERVICE";
 }
 
-export function fetchCurrentUser(client: BitbucketClient): Promise<BitbucketUser> {
-  return client.request<BitbucketUser>("/user");
+/**
+ * Data Center has no "current user" endpoint; every authenticated response carries the user's
+ * name in `X-AUSERNAME`. Ask for something cheap that needs a login, then fetch the profile.
+ */
+export async function fetchCurrentUser(client: BitbucketClient, slugHint?: string): Promise<BitbucketUser> {
+  let slug = slugHint;
+  if (!slug) {
+    const res = await client.raw("inbox/pull-requests/count");
+    slug = res.headers.get("x-ausername") ?? undefined;
+    if (!slug) throw new Error(`${client.host} accepted the token but did not report a user (no X-AUSERNAME); pass --user <name>`);
+  }
+  return client.request<BitbucketUser>(`users/${encodeURIComponent(slug)}`);
 }

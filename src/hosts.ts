@@ -5,23 +5,22 @@ import { dirname } from "node:path";
  * `hosts.yml` — the one file that holds logins. Layout mirrors `gh`'s so the same tiny YAML
  * subset serves both, and so other writers (e.g. the Sessionboxer Daemon) can render it:
  *
- *   bitbucket.org:
+ *   bitbucket.example.com:
  *       user: jperelli
- *       account_id: "{uuid}"
- *       git_user: x-token-auth
+ *       account_id: "101"
+ *       git_user: jperelli
  *       oauth_token: ...
- *       expires_at: 2026-09-21T19:03:00Z
- *       refresh_token: ...          # only when bb obtained the token itself
+ *       expires_at: 2027-09-21T00:00:00Z     # optional
  *       users:
  *           jperelli:
- *               account_id: "{uuid}"
- *               git_user: x-token-auth
+ *               account_id: "101"
+ *               git_user: jperelli
  *               oauth_token: ...
  *               expires_at: ...
- *               refresh_token: ...
  *
  * The top-level scalars duplicate the active user's entry. Only this shape is understood:
- * 4-space indentation, scalar values (bare or double-quoted JSON strings), no lists.
+ * 4-space indentation, scalar values (bare or double-quoted JSON strings), no lists. The key is
+ * called `oauth_token` for `gh` compatibility; on Data Center it holds an HTTP access token.
  */
 export interface HostUser {
   account: string;
@@ -29,7 +28,6 @@ export interface HostUser {
   gitUser: string;
   token: string;
   expiresAt: string | null;
-  refreshToken: string | null;
 }
 
 export interface HostEntry {
@@ -39,7 +37,7 @@ export interface HostEntry {
 
 export type HostsFile = Record<string, HostEntry>;
 
-const USER_KEYS = ["account_id", "git_user", "oauth_token", "expires_at", "refresh_token"] as const;
+const USER_KEYS = ["account_id", "git_user", "oauth_token", "expires_at"] as const;
 
 export function readHosts(file: string): HostsFile {
   if (!existsSync(file)) return {};
@@ -122,10 +120,9 @@ function toUser(name: string, f: Record<string, string>): HostUser {
   return {
     account: name,
     accountId: f["account_id"] ?? null,
-    gitUser: f["git_user"] ?? "x-token-auth",
+    gitUser: f["git_user"] ?? name,
     token: f["oauth_token"] ?? "",
     expiresAt: f["expires_at"] ?? null,
-    refreshToken: f["refresh_token"] ?? null,
   };
 }
 
@@ -187,7 +184,6 @@ function renderFields(u: HostUser, indent: number): string {
     git_user: u.gitUser,
     oauth_token: u.token,
     expires_at: u.expiresAt,
-    refresh_token: u.refreshToken,
   };
   let out = "";
   for (const key of USER_KEYS) {

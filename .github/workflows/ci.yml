@@ -32,4 +32,5 @@ jobs:
           npm init -y >/dev/null
           npm install --omit=dev "$RUNNER_TEMP"/talayolabs-bb-*.tgz
           test "$(./node_modules/.bin/bb --version)" = "bb $version"
-          printf 'protocol=https\nhost=bitbucket.org\n' | BB_TOKEN=t ./node_modules/.bin/bb auth git-credential get | grep -q '^password=t$'
+          printf 'protocol=https\nhost=bitbucket.example.com\n' | BB_TOKEN=t BB_HOST=bitbucket.example.com BB_GIT_USER=alice ./node_modules/.bin/bb auth git-credential get | grep -qx 'password=t'
+          test -z "$(printf 'protocol=https\nhost=github.com\n' | BB_TOKEN=t BB_HOST=bitbucket.example.com ./node_modules/.bin/bb auth git-credential get)"

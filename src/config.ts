@@ -1,14 +1,12 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { HostsFile } from "./hosts.ts";
 
-export const HOST = "bitbucket.org";
-export const API_BASE = "https://api.bitbucket.org/2.0";
-export const OAUTH_AUTHORIZE_URL = "https://bitbucket.org/site/oauth2/authorize";
-export const OAUTH_TOKEN_URL = "https://bitbucket.org/site/oauth2/access_token";
-
-/** Static git usernames Bitbucket Cloud accepts with each token type. */
-export const GIT_USER_OAUTH = "x-token-auth";
-export const GIT_USER_API_TOKEN = "x-bitbucket-api-token-auth";
+/**
+ * Git username Bitbucket Data Center expects with a project- or repository-level HTTP access
+ * token. User tokens go with the user's own username instead.
+ */
+export const GIT_USER_TOKEN_AUTH = "x-token-auth";
 
 /** `$BB_CONFIG_DIR`, else `$XDG_CONFIG_HOME/bb`, else `~/.config/bb` (same rule as `gh`). */
 export function configDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -21,11 +19,35 @@ export function hostsFile(env: NodeJS.ProcessEnv = process.env): string {
   return join(configDir(env), "hosts.yml");
 }
 
-/** Atlassian API tokens (created at id.atlassian.com) start with this prefix; OAuth access tokens do not. */
-export function looksLikeApiToken(token: string): boolean {
-  return token.startsWith("ATATT");
+/** `https://Host:443/` → `host`; hosts.yml keys and git's `host=` line are compared in this form. */
+export function normalizeHost(input: string): string {
+  let h = input.trim().toLowerCase();
+  h = h.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  h = h.replace(/:443$/, "");
+  return h;
 }
 
-export function defaultGitUser(token: string): string {
-  return looksLikeApiToken(token) ? GIT_USER_API_TOKEN : GIT_USER_OAUTH;
+export function baseUrl(host: string): string {
+  return `https://${normalizeHost(host)}`;
+}
+
+export class NoHostError extends Error {
+  constructor(message = "no Bitbucket host: pass --hostname <host>, set BB_HOST, or run inside a clone of a Bitbucket repository") {
+    super(message);
+    this.name = "NoHostError";
+  }
+}
+
+/**
+ * Which Bitbucket instance a command talks to: `--hostname` (already copied into `BB_HOST` by the
+ * CLI) wins, then the host of the current repository's remote when we are logged in there, then the
+ * only host in hosts.yml. There is no default host: Data Center is always self-hosted.
+ */
+export function resolveHost(env: NodeJS.ProcessEnv, hosts: HostsFile, remoteHost: string | null = null): string {
+  if (env.BB_HOST) return normalizeHost(env.BB_HOST);
+  if (remoteHost) return normalizeHost(remoteHost);
+  const known = Object.keys(hosts).filter((h) => hosts[h]!.users.length > 0);
+  if (known.length === 1) return known[0]!;
+  if (known.length > 1) throw new NoHostError(`several hosts are logged in (${known.join(", ")}); pass --hostname <host> or set BB_HOST`);
+  throw new NoHostError();
 }

@@ -6,18 +6,17 @@ import { join } from "node:path";
 import { activeUser, parseHosts, readHosts, removeUser, renderHosts, updateUser, upsertUser, writeHosts, type HostsFile } from "./hosts.ts";
 
 const sample: HostsFile = {
-  "bitbucket.org": {
+  "bitbucket.example.com": {
     active: "jperelli",
     users: [
       {
         account: "jperelli",
         accountId: "{7c3d0000-0000-4000-8000-000000000000}",
-        gitUser: "x-token-auth",
+        gitUser: "jperelli",
         token: "access-1",
         expiresAt: "2026-09-21T19:03:00Z",
-        refreshToken: "refresh-1",
       },
-      { account: "bot", accountId: null, gitUser: "x-bitbucket-api-token-auth", token: "ATATT3xFfGF0abc", expiresAt: null, refreshToken: null },
+      { account: "bot", accountId: null, gitUser: "x-token-auth", token: "MDM0MjM5NDc2MDabc", expiresAt: null },
     ],
   },
 };
@@ -27,23 +26,21 @@ test("renders the gh-like layout with the active user duplicated at the top", ()
   assert.equal(
     text,
     [
-      "bitbucket.org:",
+      "bitbucket.example.com:",
       "    user: jperelli",
       '    account_id: "{7c3d0000-0000-4000-8000-000000000000}"',
-      "    git_user: x-token-auth",
+      "    git_user: jperelli",
       "    oauth_token: access-1",
       "    expires_at: 2026-09-21T19:03:00Z",
-      "    refresh_token: refresh-1",
       "    users:",
       "        jperelli:",
       '            account_id: "{7c3d0000-0000-4000-8000-000000000000}"',
-      "            git_user: x-token-auth",
+      "            git_user: jperelli",
       "            oauth_token: access-1",
       "            expires_at: 2026-09-21T19:03:00Z",
-      "            refresh_token: refresh-1",
       "        bot:",
-      "            git_user: x-bitbucket-api-token-auth",
-      "            oauth_token: ATATT3xFfGF0abc",
+      "            git_user: x-token-auth",
+      "            oauth_token: MDM0MjM5NDc2MDabc",
       "",
     ].join("\n"),
   );
@@ -54,17 +51,22 @@ test("parse(render(x)) round-trips", () => {
 });
 
 test("parses a Daemon-style file with only top-level scalars", () => {
-  const hosts = parseHosts("bitbucket.org:\n    user: alice\n    git_user: x-token-auth\n    oauth_token: t1\n");
-  assert.deepEqual(hosts["bitbucket.org"], {
+  const hosts = parseHosts("bitbucket.example.com:\n    user: alice\n    git_user: x-token-auth\n    oauth_token: t1\n");
+  assert.deepEqual(hosts["bitbucket.example.com"], {
     active: "alice",
-    users: [{ account: "alice", accountId: null, gitUser: "x-token-auth", token: "t1", expiresAt: null, refreshToken: null }],
+    users: [{ account: "alice", accountId: null, gitUser: "x-token-auth", token: "t1", expiresAt: null }],
   });
+});
+
+test("git_user defaults to the account name", () => {
+  const hosts = parseHosts("bitbucket.example.com:\n    user: alice\n    oauth_token: t1\n");
+  assert.equal(hosts["bitbucket.example.com"]!.users[0]!.gitUser, "alice");
 });
 
 test("tolerates comments, blank lines, CRLF, quoted keys and an unknown active user", () => {
   const text = [
     "# written by hand",
-    '"bitbucket.org":',
+    '"bitbucket.example.com":',
     "    user: nobody",
     "",
     "    users:",
@@ -75,7 +77,7 @@ test("tolerates comments, blank lines, CRLF, quoted keys and an unknown active u
     '            oauth_token: "t2"',
     "",
   ].join("\n");
-  const entry = parseHosts(text)["bitbucket.org"]!;
+  const entry = parseHosts(text)["bitbucket.example.com"]!;
   assert.equal(entry.active, "alice");
   assert.equal(entry.users[0]!.token, "it's");
   assert.equal(entry.users[1]!.token, "t2");
@@ -83,7 +85,7 @@ test("tolerates comments, blank lines, CRLF, quoted keys and an unknown active u
 
 test("quotes values that YAML would otherwise mistype", () => {
   const text = renderHosts({
-    h: { active: "true", users: [{ account: "true", accountId: "123", gitUser: "x", token: "a b", expiresAt: null, refreshToken: null }] },
+    h: { active: "true", users: [{ account: "true", accountId: "123", gitUser: "x", token: "a b", expiresAt: null }] },
   });
   assert.match(text, /^    user: "true"$/m);
   assert.match(text, /^    account_id: "123"$/m);
@@ -105,18 +107,18 @@ test("writeHosts creates dir 0700 / file 0600 atomically and removes the file wh
 });
 
 test("upsert/update/remove keep the active pointer sensible", () => {
-  const carol = { account: "carol", accountId: null, gitUser: "x-token-auth", token: "t3", expiresAt: null, refreshToken: null };
-  let hosts = upsertUser(sample, "bitbucket.org", carol);
-  assert.equal(activeUser(hosts, "bitbucket.org")!.account, "carol");
-  assert.equal(hosts["bitbucket.org"]!.users.length, 3);
+  const carol = { account: "carol", accountId: null, gitUser: "x-token-auth", token: "t3", expiresAt: null };
+  let hosts = upsertUser(sample, "bitbucket.example.com", carol);
+  assert.equal(activeUser(hosts, "bitbucket.example.com")!.account, "carol");
+  assert.equal(hosts["bitbucket.example.com"]!.users.length, 3);
 
-  hosts = updateUser(hosts, "bitbucket.org", { ...sample["bitbucket.org"]!.users[0]!, token: "access-2" });
-  assert.equal(activeUser(hosts, "bitbucket.org")!.account, "carol");
-  assert.equal(hosts["bitbucket.org"]!.users.find((u) => u.account === "jperelli")!.token, "access-2");
+  hosts = updateUser(hosts, "bitbucket.example.com", { ...sample["bitbucket.example.com"]!.users[0]!, token: "access-2" });
+  assert.equal(activeUser(hosts, "bitbucket.example.com")!.account, "carol");
+  assert.equal(hosts["bitbucket.example.com"]!.users.find((u) => u.account === "jperelli")!.token, "access-2");
 
-  hosts = removeUser(hosts, "bitbucket.org", "carol");
-  assert.equal(activeUser(hosts, "bitbucket.org")!.account, "jperelli");
-  hosts = removeUser(removeUser(hosts, "bitbucket.org", "jperelli"), "bitbucket.org", "bot");
+  hosts = removeUser(hosts, "bitbucket.example.com", "carol");
+  assert.equal(activeUser(hosts, "bitbucket.example.com")!.account, "jperelli");
+  hosts = removeUser(removeUser(hosts, "bitbucket.example.com", "jperelli"), "bitbucket.example.com", "bot");
   assert.deepEqual(hosts, {});
 });
 

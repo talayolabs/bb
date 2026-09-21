@@ -1,11 +1,11 @@
-# bb — Bitbucket Cloud from the command line
+# bb — Bitbucket Data Center from the command line
 
-`bb` is to [bitbucket.org](https://bitbucket.org) what `gh` is to GitHub: one login, then `git push`,
-REST calls and (soon) pull-request commands all work as that account, with nothing to paste into
-git remotes or environment variables.
+`bb` is to a self-hosted Bitbucket (Data Center / Server, e.g. `bitbucket.yourcompany.com`) what `gh`
+is to GitHub: one login, then `git push`, REST calls and (soon) pull-request commands all work as that
+account, with nothing to paste into git remotes or environment variables.
 
-Status: **early**. Today `bb` does token login, account management, a git credential helper and a
-generic `bb api`. Browser (OAuth) login and `bb pr …` are next — see [Roadmap](#roadmap).
+Status: **early**. Today `bb` does guided login, account management, a git credential helper and a
+generic `bb api`. `bb pr …` is next — see [Roadmap](#roadmap).
 
 Requires Node.js 22.18+.
 
@@ -21,81 +21,96 @@ npm run bundle && cp build/bb.mjs /usr/local/bin/bb
 
 ## Log in
 
-Create an [Atlassian API token with scopes](https://id.atlassian.com/manage-profile/security/api-tokens)
-(`read:user:bitbucket`, `read:repository:bitbucket`, `write:repository:bitbucket`,
-`read:pullrequest:bitbucket`, `write:pullrequest:bitbucket`), then:
-
 ```sh
-bb auth login --with-token < token.txt
-bb auth status
+bb auth login --hostname bitbucket.yourcompany.com
 ```
 
-`bb` verifies the token against `GET /2.0/user`, stores it in `hosts.yml` (mode 0600, under
-`$BB_CONFIG_DIR`, `$XDG_CONFIG_HOME/bb` or `~/.config/bb`) and picks the git username the token needs
-(`x-bitbucket-api-token-auth` for API tokens, `x-token-auth` for OAuth access tokens).
+`bb` opens `https://bitbucket.yourcompany.com/plugins/servlet/access-tokens/manage` in your browser
+(Profile picture → Manage account → HTTP access tokens). Create a token — *Project: Read* plus
+*Repository: Write* is enough to clone, push and do everything on pull requests except merging — and
+paste it once into the terminal (input is hidden). `bb` verifies it, learns your username from the
+instance and stores both in `hosts.yml` (mode 0600, under `$BB_CONFIG_DIR`, `$XDG_CONFIG_HOME/bb` or
+`~/.config/bb`). Tokens can be given an expiry when created; `bb auth status` shows it and warns a week
+ahead.
 
-Several accounts can be logged in; `bb auth switch --user <name>` picks the active one and
-`bb auth logout [--user <name>]` removes one. `bb auth token` prints the active access token for other tools.
+Non-interactive (CI, sandbox supervisors):
 
-`BB_TOKEN` (and optionally `BB_GIT_USER`) override the stored login for one-off commands and CI.
+```sh
+bb auth login --hostname bitbucket.yourcompany.com --with-token < token.txt
+bb auth login --hostname bitbucket.yourcompany.com --with-token --skip-verify --user alice < token.txt
+```
+
+Several hosts and several accounts per host can be logged in; `--hostname <host>` or `BB_HOST` picks
+the host (inside a clone of a Bitbucket repository the remote's host is used, and with a single login
+there is nothing to pick). `bb auth switch --user <name>` picks the active account,
+`bb auth logout [--user <name>]` removes one, `bb auth token` prints the active token for other tools.
+
+`BB_TOKEN` (with `BB_HOST`, and `BB_GIT_USER` for git) overrides the stored login for one-off
+commands and CI.
+
+OAuth 2.0 login is deliberately not implemented: on Data Center it requires an administrator to create
+an incoming application link per instance.
 
 ## Git over HTTPS
 
 ```sh
-git config --global credential.https://bitbucket.org.helper '!bb auth git-credential'   # or: bb auth setup-git
-git clone https://bitbucket.org/<workspace>/<repo>.git
+bb auth setup-git    # prints:
+git config --global credential.https://bitbucket.yourcompany.com.helper '!bb auth git-credential'
+git clone https://bitbucket.yourcompany.com/scm/PROJ/repo.git
 ```
 
-The helper answers only for `https://bitbucket.org`, accepts and ignores `store`/`erase` so git never
-persists the token elsewhere, and refreshes OAuth tokens transparently when it can.
+The helper answers only for hosts in `hosts.yml` (or `BB_HOST`), with your real username and the HTTP
+access token as the password, exactly as Bitbucket documents it. It accepts and ignores `store`/`erase`
+so git never persists the token anywhere else, and stays silent for github.com or any other host.
 
 ## REST API
 
 ```sh
-bb api user
-bb api /repositories/{workspace}/{repo}/pullrequests -q state=OPEN --paginate --jq '.[].title'
-bb api /repositories/ws/repo/pullrequests \
-  -f title='Fix the thing' -f source.branch.name=fix -f destination.branch.name=main
-bb api /repositories/ws/repo/pullrequests/12/comments -f content.raw='Looks good'
-bb api /repositories/ws/repo/pullrequests/12/comments/99/resolve -X POST
+bb api projects/{project}/repos/{repo}/pull-requests -q state=OPEN --paginate --jq '.[].title'
+bb api projects/PROJ/repos/repo/pull-requests \
+  -f title='Fix the thing' -f fromRef.id=refs/heads/fix -f toRef.id=refs/heads/main
+bb api projects/PROJ/repos/repo/pull-requests/12/comments -f text='Looks good'
+bb api projects/PROJ/repos/repo/pull-requests/12/activities --paginate
+bb api rest/build-status/latest/commits/<sha>
+bb api users/alice --hostname bitbucket.yourcompany.com
 ```
 
-Paths are relative to `https://api.bitbucket.org/2.0`; `{workspace}` and `{repo}` are filled from the
-current directory's bitbucket.org remote. `--paginate` follows `next` links. Errors are classified
+Paths are relative to `https://<host>/rest/api/latest`; paths starting with `rest/` are resolved at the
+instance root (other REST modules such as `rest/build-status`, `rest/default-reviewers`). `{project}` and
+`{repo}` are filled from the current directory's remote — `https://host/scm/KEY/slug.git`,
+`ssh://git@host:7999/KEY/slug.git` and `https://host/projects/KEY/repos/slug` are understood.
+`--paginate` follows `start`/`nextPageStart` until `isLastPage`. Requests use `Authorization: Bearer`,
+absolute URLs must be on the same host (the token is never sent elsewhere), errors are classified
 (401 → exit 4, 429 reports `Retry-After`) and the token is never printed, not even with `--verbose`.
 
-Exit codes: `0` ok · `1` error · `2` usage · `4` not logged in / token rejected.
+Exit codes: `0` ok · `1` error · `2` usage · `4` no host / not logged in / token rejected.
 
 ## `hosts.yml`
 
 ```yaml
-bitbucket.org:
-    user: jperelli
-    account_id: "557058:…"
-    git_user: x-token-auth
-    oauth_token: <access token>
-    expires_at: 2026-09-21T19:03:00Z
-    refresh_token: <refresh token>     # only when bb obtained the token itself
+bitbucket.yourcompany.com:
+    user: alice
+    account_id: "101"
+    git_user: alice
+    oauth_token: <HTTP access token>
+    expires_at: 2027-09-21T00:00:00Z     # optional
     users:
-        jperelli:
-            account_id: "557058:…"
-            git_user: x-token-auth
-            oauth_token: <access token>
-            expires_at: 2026-09-21T19:03:00Z
-            refresh_token: <refresh token>
+        alice:
+            account_id: "101"
+            git_user: alice
+            oauth_token: <HTTP access token>
+            expires_at: 2027-09-21T00:00:00Z
 ```
 
 The layout mirrors `gh`'s so other programs can provision it (for example a sandbox supervisor that
-writes short-lived access tokens to a tmpfs `BB_CONFIG_DIR` and keeps the refresh token to itself).
-`expires_at` is optional; when present and a `refresh_token` plus an OAuth consumer
-(`BB_OAUTH_CLIENT_ID`/`BB_OAUTH_CLIENT_SECRET`, or the embedded one) are available, `bb` refreshes
-the token about five minutes before expiry and writes the rotated pair back.
+writes a token to a tmpfs `BB_CONFIG_DIR`). `git_user` defaults to `user`; set it to `x-token-auth` for
+project/repository tokens. The key stays `oauth_token` for `gh` compatibility even though the value is an
+HTTP access token.
 
 ## Roadmap
 
-- `bb auth login` in the browser: embedded OAuth consumer, loopback callback, refresh-token rotation.
-- `bb pr create | list | view | checks | comment | reply | resolve | reopen`, `bb repo clone`.
-- Bitbucket Data Center is out of scope for now (different REST API and auth).
+- `bb pr create | list | view | checks | comment | reply | resolve | approve`, `bb repo clone`.
+- Bitbucket Cloud (bitbucket.org) as a second provider.
 
 ## Development
 

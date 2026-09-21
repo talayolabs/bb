@@ -1,22 +1,22 @@
-import { HOST, defaultGitUser, hostsFile } from "./config.ts";
-import { activeUser, readHosts, updateUser, writeHosts, type HostUser } from "./hosts.ts";
-import { consumerFrom, refreshAccessToken, secondsUntil, type Consumer } from "./oauth.ts";
-import type { FetchLike } from "./api.ts";
+import { GIT_USER_TOKEN_AUTH, hostsFile, normalizeHost } from "./config.ts";
+import { activeUser, readHosts } from "./hosts.ts";
 
-/** Refresh when the access token has less than this left; also the threshold `auth status` reports as "expiring". */
-export const REFRESH_MARGIN_SECONDS = 5 * 60;
+/** `auth status` reports a token as "expiring" when it has less than this left. */
+export const EXPIRY_WARNING_SECONDS = 7 * 24 * 3600;
 
 export class NotLoggedInError extends Error {
-  constructor(message = "not logged in to bitbucket.org; run `bb auth login` or set BB_TOKEN") {
-    super(message);
+  constructor(host: string | null, message?: string) {
+    super(message ?? `not logged in to ${host ?? "any Bitbucket host"}; run \`bb auth login --hostname ${host ?? "<host>"}\` or set BB_TOKEN`);
     this.name = "NotLoggedInError";
   }
 }
 
 export interface Credential {
+  host: string;
   token: string;
+  /** Username git sends with the token (the user's own name, or x-token-auth for project/repo tokens). */
   gitUser: string;
-  /** Account nickname when known (from hosts.yml); null for `BB_TOKEN`. */
+  /** Account name when known (from hosts.yml); null for `BB_TOKEN`. */
   account: string | null;
   source: "env" | "hosts";
   expiresAt: string | null;
@@ -24,56 +24,34 @@ export interface Credential {
 
 export interface ResolveDeps {
   env?: NodeJS.ProcessEnv;
-  fetch?: FetchLike;
   now?: () => Date;
   /** Path override for tests. */
   file?: string;
 }
 
 /**
- * Resolution order (same as `gh`): `BB_TOKEN` env wins, then the active user in `hosts.yml`.
- * A hosts.yml login that carries a refresh token is refreshed transparently when it is about
- * to expire, and the rotated tokens are written back.
+ * Resolution order (same as `gh`): `BB_TOKEN` env wins, then the active user for `host` in
+ * `hosts.yml`. An expired token is reported, not served.
  */
-export async function resolveCredential(deps: ResolveDeps = {}): Promise<Credential> {
+export function resolveCredential(host: string, deps: ResolveDeps = {}): Credential {
   const env = deps.env ?? process.env;
+  const h = normalizeHost(host);
   if (env.BB_TOKEN) {
-    return {
-      token: env.BB_TOKEN,
-      gitUser: env.BB_GIT_USER || defaultGitUser(env.BB_TOKEN),
-      account: null,
-      source: "env",
-      expiresAt: null,
-    };
+    return { host: h, token: env.BB_TOKEN, gitUser: env.BB_GIT_USER || GIT_USER_TOKEN_AUTH, account: null, source: "env", expiresAt: null };
   }
-  const file = deps.file ?? hostsFile(env);
-  const hosts = readHosts(file);
-  let user = activeUser(hosts, HOST);
-  if (!user || !user.token) throw new NotLoggedInError();
-
-  const now = deps.now?.() ?? new Date();
-  const left = secondsUntil(user.expiresAt, now);
-  if (left !== null && left < REFRESH_MARGIN_SECONDS) {
-    const consumer = user.refreshToken ? consumerFrom(env) : null;
-    if (user.refreshToken && consumer) {
-      user = await refreshUser(user, consumer, deps, file);
-    } else if (left <= 0) {
-      const why = user.refreshToken ? "; no OAuth consumer is configured to refresh it" : "";
-      throw new NotLoggedInError(
-        `the bitbucket.org token for @${user.account} expired at ${user.expiresAt}${why}; run \`bb auth login\` again`,
-      );
-    }
+  const user = activeUser(readHosts(deps.file ?? hostsFile(env)), h);
+  if (!user || !user.token) throw new NotLoggedInError(h);
+  const left = secondsUntil(user.expiresAt, deps.now?.() ?? new Date());
+  if (left !== null && left <= 0) {
+    throw new NotLoggedInError(h, `the ${h} token for ${user.account} expired at ${user.expiresAt}; create a new one with \`bb auth login --hostname ${h}\``);
   }
-  return { token: user.token, gitUser: user.gitUser, account: user.account, source: "hosts", expiresAt: user.expiresAt };
+  return { host: h, token: user.token, gitUser: user.gitUser, account: user.account, source: "hosts", expiresAt: user.expiresAt };
 }
 
-async function refreshUser(user: HostUser, consumer: Consumer, deps: ResolveDeps, file: string): Promise<HostUser> {
-  const refreshOpts: Parameters<typeof refreshAccessToken>[2] = {};
-  if (deps.fetch) refreshOpts.fetch = deps.fetch;
-  if (deps.now) refreshOpts.now = deps.now;
-  const fresh = await refreshAccessToken(user.refreshToken!, consumer, refreshOpts);
-  const next: HostUser = { ...user, token: fresh.token, refreshToken: fresh.refreshToken, expiresAt: fresh.expiresAt };
-  // Re-read before writing: another bb process may have refreshed meanwhile.
-  writeHosts(file, updateUser(readHosts(file), HOST, next));
-  return next;
+/** Seconds from `now` until `expiresAt`; null when there is no expiry or it is unparseable. */
+export function secondsUntil(expiresAt: string | null, now: Date): number | null {
+  if (!expiresAt) return null;
+  const t = Date.parse(expiresAt);
+  if (Number.isNaN(t)) return null;
+  return Math.floor((t - now.getTime()) / 1000);
 }
